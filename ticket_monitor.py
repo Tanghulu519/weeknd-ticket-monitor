@@ -469,7 +469,8 @@ def make_release_message(result: CheckResult) -> tuple[str, str]:
         f"检测到快达票页面已经进入可购票状态。\n\n"
         f"- 页面：[{result.url}]({result.url})\n"
         f"- 检测时间：{result.fetched_at}\n"
-        f"- 判断依据：{result.reason}\n\n"
+        f"- \u5224\u65ad\u4f9d\u636e\uff1a{result.reason}\n"
+        f"- \u9875\u9762\u5217\u51fa\u7684\u7968\u6863\u4ef7\u4f4d\uff1a{result.price_summary or '\u672a\u80fd\u4ece\u9875\u9762\u89e3\u6790\u4ef7\u4f4d'}\n\n"
         f"请立即打开购票页并完成登录/选票。"
     )
     return title, description

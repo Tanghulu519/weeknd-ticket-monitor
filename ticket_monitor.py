@@ -299,33 +299,46 @@ def _price_status(context: str) -> str:
 
 def extract_price_options(html: str) -> list[dict[str, str]]:
     lines = visible_text_lines(html).splitlines()
-    options: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
+    overall_status, _ = detect_availability(html)
+    options: dict[tuple[str, str], dict[str, str]] = {}
+    fee_pattern = re.compile(
+        r"(?i)\u5feb\u9012|\u6d3e\u9012|\u4e13\u9012|\u6302\u53f7|\u8fd0\u8d39|\u90ae\u8d39|\u8d39\u7528|shipping|delivery|\bfee\b"
+    )
 
     for line in lines:
-      for match in PRICE_TOKEN.finditer(line):
-          raw_amount = match.group("after") or match.group("before") or ""
-          amount = raw_amount.replace(",", "")
-          currency = match.group("prefix") or match.group("suffix") or "HK$"
-          if not amount:
-              continue
+        for match in PRICE_TOKEN.finditer(line):
+            raw_amount = match.group("after") or match.group("before") or ""
+            currency = match.group("prefix") or match.group("suffix") or "HK$"
+            if not raw_amount:
+                continue
 
-          context = line
-          status = _price_status(context)
-          label = re.sub(r"HK\$|HKD|\u6e2f\u5e01|\u6e2f\u5143|[0-9][0-9,]*(?:\.[0-9]{1,2})?", " ", context, flags=re.I)
-          label = re.sub(r"\s+", " ", label).strip(" \t-|:?,??")
-          key = (amount, status)
-          if key in seen:
-              continue
-          seen.add(key)
-          options.append(
-              {
-                  "amount": amount,
-                  "currency": currency,
-                  "status": status,
-                  "label": label[:80],
-              }
-          )
+            numeric = float(raw_amount.replace(",", ""))
+            amount = f"{numeric:.2f}".rstrip("0").rstrip(".")
+            label = re.sub(
+                r"HK\$|HKD|\u6e2f\u5e01|\u6e2f\u5143|[0-9][0-9,]*(?:\.[0-9]{1,2})?",
+                " ",
+                line,
+                flags=re.I,
+            )
+            label = re.sub(r"[/|\\]+", " ", label)
+            label = re.sub(r"\s+", " ", label).strip(" \t-|:?,??")
+            if fee_pattern.search(label):
+                continue
+
+            status = _price_status(line)
+            if status == "unknown" and overall_status == "available":
+                status = "available"
+
+            key = (amount, status)
+            current = options.get(key)
+            candidate = {
+                "amount": amount,
+                "currency": currency,
+                "status": status,
+                "label": label[:80],
+            }
+            if not current or (current["label"] in {"", "\u8d77"} and candidate["label"]):
+                options[key] = candidate
 
     def sort_key(item: dict[str, str]) -> float:
         try:
@@ -333,7 +346,7 @@ def extract_price_options(html: str) -> list[dict[str, str]]:
         except ValueError:
             return float("inf")
 
-    return sorted(options, key=sort_key)
+    return sorted(options.values(), key=sort_key)
 
 
 def format_price_summary(html: str) -> str:

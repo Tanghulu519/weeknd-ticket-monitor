@@ -23,6 +23,7 @@ import sys
 import time
 from dataclasses import dataclass, asdict
 from email.message import EmailMessage
+from html import unescape
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.error import HTTPError, URLError
@@ -88,6 +89,7 @@ class CheckResult:
     reason: str
     content_hash: str
     fetched_at: str
+    price_summary: str = ""
 
 
 @dataclass
@@ -236,6 +238,17 @@ def normalize_text(html: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
+def visible_text_lines(html: str) -> str:
+    """Extract visible text while preserving block boundaries."""
+    text = re.sub(r"<script\b.*?</script>", " ", html, flags=re.I | re.S)
+    text = re.sub(r"<style\b.*?</style>", " ", text, flags=re.I | re.S)
+    text = re.sub(r"</?(?:div|p|li|tr|td|th|section|article|button|h[1-6])\b[^>]*>", "\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = unescape(text)
+    lines = [re.sub(r"\s+", " ", line).strip(" \t-|:?,??") for line in text.splitlines()]
+    return "\n".join(line for line in lines if line)
+
+
 def detect_availability(html: str) -> tuple[str, str]:
     text = normalize_text(html)
     structured_positive = bool(STRUCTURED_POSITIVE.search(html))
@@ -261,11 +274,96 @@ def detect_availability(html: str) -> tuple[str, str]:
     return "unknown", "no recognizable sale status"
 
 
+PRICE_TOKEN = re.compile(
+    r"""(?ix)
+    (?:
+        (?P<prefix>HK\$|HKD|\u6e2f\u5e01|\u6e2f\u5143)\s*
+        (?P<after>[0-9][0-9,]*(?:\.[0-9]{1,2})?)
+    )
+    |
+    (?:
+        (?P<before>[0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*
+        (?P<suffix>HK\$|HKD|\u6e2f\u5e01|\u6e2f\u5143)
+    )
+    """
+)
+
+
+def _price_status(context: str) -> str:
+    if NEGATIVE_PATTERNS.search(context):
+        return "unavailable"
+    if POSITIVE_PATTERNS.search(context) or re.search(r"\bavailable\b|\u53ef\u552e|\u53ef\u8d2d\u7968", context, re.I):
+        return "available"
+    return "unknown"
+
+
+def extract_price_options(html: str) -> list[dict[str, str]]:
+    lines = visible_text_lines(html).splitlines()
+    options: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for line in lines:
+      for match in PRICE_TOKEN.finditer(line):
+          raw_amount = match.group("after") or match.group("before") or ""
+          amount = raw_amount.replace(",", "")
+          currency = match.group("prefix") or match.group("suffix") or "HK$"
+          if not amount:
+              continue
+
+          context = line
+          status = _price_status(context)
+          label = re.sub(r"HK\$|HKD|\u6e2f\u5e01|\u6e2f\u5143|[0-9][0-9,]*(?:\.[0-9]{1,2})?", " ", context, flags=re.I)
+          label = re.sub(r"\s+", " ", label).strip(" \t-|:?,??")
+          key = (amount, status)
+          if key in seen:
+              continue
+          seen.add(key)
+          options.append(
+              {
+                  "amount": amount,
+                  "currency": currency,
+                  "status": status,
+                  "label": label[:80],
+              }
+          )
+
+    def sort_key(item: dict[str, str]) -> float:
+        try:
+            return float(item["amount"])
+        except ValueError:
+            return float("inf")
+
+    return sorted(options, key=sort_key)
+
+
+def format_price_summary(html: str) -> str:
+    options = extract_price_options(html)
+    if not options:
+        return ""
+    rendered = []
+    status_text = {
+        "available": "\u53ef\u552e",
+        "unavailable": "\u6682\u65e0\u53ef\u552e",
+        "unknown": "\u72b6\u6001\u672a\u77e5",
+    }
+    for item in options[:12]:
+        label = f" ({item['label']})" if item["label"] else ""
+        rendered.append(f"{item['currency']}{item['amount']} {status_text[item['status']]}{label}")
+    return "; ".join(rendered)
+
+
 def check_url(url: str) -> CheckResult:
     html = fetch_html(url)
     status, reason = detect_availability(html)
     digest = hashlib.sha256(html.encode("utf-8", errors="replace")).hexdigest()
-    return CheckResult(url=url, status=status, reason=reason, content_hash=digest, fetched_at=utc_now())
+    return CheckResult(
+        url=url,
+        status=status,
+        reason=reason,
+        content_hash=digest,
+        fetched_at=utc_now(),
+        price_summary=format_price_summary(html),
+    )
 
 
 class Notifier:
@@ -396,7 +494,8 @@ def run_monitor(urls: Iterable[str], state_file: Path, cooldown_minutes: int, no
             failures += 1
             continue
 
-        print(f"[{result.fetched_at}] {url} -> {result.status} ({result.reason})")
+        price_note = f" prices={result.price_summary}" if result.price_summary else ""
+        print(f"[{result.fetched_at}] {url} -> {result.status} ({result.reason}){price_note}")
         if should_notify(state, result, cooldown_minutes):
             title, description = make_release_message(result)
             channels = notifier.send(title, description)

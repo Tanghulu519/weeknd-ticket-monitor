@@ -1,0 +1,59 @@
+﻿# 每 5 分钟检查一次。GitHub Actions 的定时任务最低间隔通常为 5 分钟，
+# 高峰期可能有几分钟延迟；workflow_dispatch 可随时手动触发。
+name: Weeknd Hong Kong ticket monitor
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Chromium renderer
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+          echo "TICKET_BROWSER=$(find "$HOME/.cache/ms-playwright" -type f -name chrome | head -n 1)" >> "$GITHUB_ENV"
+
+      - name: Restore monitor state
+        uses: actions/cache/restore@v4
+        with:
+          path: ticket-monitor-state.json
+          key: ticket-monitor-state-${{ github.run_id }}
+          restore-keys: |
+            ticket-monitor-state-
+
+      - name: Run monitor
+        env:
+          # 推荐把 URL 放在仓库变量 Settings -> Secrets and variables -> Actions -> Variables。
+          TICKET_URLS: ${{ vars.TICKET_URLS }}
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          COOLDOWN_MINUTES: ${{ vars.COOLDOWN_MINUTES || '360' }}
+        run: python ticket_monitor.py --state-file ticket-monitor-state.json
+
+      - name: Save monitor state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ticket-monitor-state.json
+          key: ticket-monitor-state-${{ github.run_id }}

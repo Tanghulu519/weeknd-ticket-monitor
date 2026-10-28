@@ -156,28 +156,57 @@ def find_browser() -> Optional[str]:
 def fetch_rendered_html(url: str, timeout: int = 30) -> str:
     """Render the HK Ticketing SPA and return its final DOM."""
     browser = find_browser()
+
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            launch_options = {
+                "headless": True,
+                "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+            }
+            if browser:
+                launch_options["executable_path"] = browser
+            rendered = playwright.chromium.launch(**launch_options)
+            try:
+                page = rendered.new_page(locale="zh-HK")
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+                page.wait_for_timeout(8000)
+                return page.content()
+            finally:
+                rendered.close()
+    except ImportError:
+        pass
+    except Exception:
+        if os.getenv("TICKET_REQUIRE_PLAYWRIGHT", "").lower() in {"1", "true", "yes"}:
+            raise
+
     if not browser:
-        raise RuntimeError("??? Edge/Chrome???? Edge???? TICKET_BROWSER ???????")
+        raise RuntimeError("No Edge/Chrome browser found; install Edge or set TICKET_BROWSER")
 
     command = [
-            browser,
-            "--headless",
-            "--disable-gpu",
-            "--no-first-run",
-            "--disable-extensions",
-            "--virtual-time-budget=8000",
-            "--dump-dom",
+        browser,
+        "--headless",
+        "--disable-gpu",
+        "--no-first-run",
+        "--disable-extensions",
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--virtual-time-budget=8000",
+        "--dump-dom",
         url,
     ]
     completed = subprocess.run(
         command,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         timeout=timeout,
         check=False,
     )
     if completed.returncode != 0:
-        raise RuntimeError(f"??????????? {completed.returncode}")
+        stderr = completed.stderr.decode("utf-8", errors="replace")[-500:]
+        raise RuntimeError(f"Browser render failed with exit code {completed.returncode}: {stderr}")
     return completed.stdout.decode("utf-8", errors="replace")
 
 

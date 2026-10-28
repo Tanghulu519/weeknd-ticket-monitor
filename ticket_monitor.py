@@ -302,7 +302,7 @@ def extract_price_options(html: str) -> list[dict[str, str]]:
     overall_status, _ = detect_availability(html)
     options: dict[tuple[str, str], dict[str, str]] = {}
     fee_pattern = re.compile(
-        r"(?i)\u5feb\u9012|\u6d3e\u9012|\u4e13\u9012|\u6302\u53f7|\u8fd0\u8d39|\u90ae\u8d39|\u8d39\u7528|shipping|delivery|\bfee\b"
+        r"(?i)\u5feb\u9012|\u6d3e\u9012|\u6d3e\u905d|\u4e13\u9012|\u5c08遞|\u6302\u53f7|\u639b\u865f|\u8fd0\u8d39|\u904b\u8cbb|\u90ae\u8d39|\u90f5\u8cbb|\u8d39\u7528|\u8cbb\u7528|shipping|delivery|\bfee\b"
     )
 
     for line in lines:
